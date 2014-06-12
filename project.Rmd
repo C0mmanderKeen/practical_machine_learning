@@ -1,0 +1,144 @@
+Generation of a machine learning model to predict the quality of weight lifting excercises
+========================================================
+
+### 1. Introduction to problem
+
+This exercise uses the data provided by Ugulino et al., 2012 to generate a machine learning algorithm to predict the quality of weight lifting exercises. Six participants were asked to perform a weight lifting excercise either according to specifications (class A) or with common mistakes (classes B, C, D, and E). The participants' movements were tracked using sensors. The question of this project is whether based on the sensor measurements a machine learning algorithm can be generated, which can predict whether the weight lifting excercise was performed correctly, and if not, which kind of mistake was made. 
+
+A detailed description of the experimental setup can be found here: http://groupware.les.inf.puc-rio.br/har. 
+
+### 2. Pre-processing and feature selection
+
+The number of features of the data set is rather large, so feature selection may reduce potential colinearity and computation time. The following features will be excluded from further analysis: 
+
+1. Features which exclusively contain "NA" values in the test set
+2. Features that relate to the time the measurements were taken
+3. Features with non-zero variance
+4. Features with high correlation (to avoid colinearity)
+
+Load libraries and set up session for parallel processing
+```{r, message=FALSE}
+rm(list=ls())
+library(caret)
+```
+
+Data loading and pre-processing
+```{r}
+# read training and testing data
+trainingRaw <- read.csv("~/pml-training.csv")
+testingRaw <- read.csv("~/pml-testing.csv")
+# number of features in raw data
+ncol(trainingRaw)-1
+# rename last column of testing set to avoid inconsistency of names
+names(testingRaw)[160] <- "classe"
+# remove features that have NA in testing set
+naIdx <- which(apply(testingRaw, 2, function(column) all(is.na(column))))
+unclassified <- subset(testingRaw, select=-naIdx)
+trainingSub <- subset(trainingRaw, select=-naIdx)
+# remove row name and time-related features
+unclassified <- subset(unclassified, select=-c(1, 3:5))
+trainingSub <- subset(trainingSub, select=-c(1, 3:5))
+# check for features with near-zero variance
+nsv <- nearZeroVar(trainingSub)
+trainingSub <- subset(trainingSub, select=-nsv)
+unclassified <- subset(unclassified, select=-nsv)
+# remove highly correlated features (>0.8)
+idxNumeric <- which(sapply(trainingSub, class)=="numeric")
+hc <- cor(trainingSub[, idxNumeric])
+idxHc <- idxNumeric[findCorrelation(hc, cutoff=0.8)]
+trainingSub <- subset(trainingSub, select=-idxHc)
+unclassified <- subset(unclassified, select=-idxHc)
+# number of features in pre-processed data
+ncol(trainingSub)-1
+```
+
+Conclusions:
+
+The initial number of features was dramatically reduced from 159 to 50. Removing features exclusively containing "NA" values alone reduced the number of features by 100. 
+
+### 3. Test machine learning algorithms and evaluate performance by cross-validation
+
+Prior to fitting machine learning algorithms to the training set, a test set is split off from the training set to get an unbiased estimate of out-of-sample error of the fitted model. Model selection is performed by 5-fold cross-validation for five different values for each tuning parameter per algorithm tested. 
+
+Four classification models are tried: one linear (linear discriminant analysis) and three non-linear algorithms (random forest, boosted trees, support vector machine). Missing data are imputed using the k-nearest neighbor algorithm. To avoid non-gaussian distributions data are Box-Cox transformed prior to running the training algorithm. 
+
+```{r}
+# load trained models
+# to train models from scratch, uncomment the training commands in next chunck (~2 hrs)
+load("~/rf.RData")
+load("~/gbm.RData")
+load("~/lda.RData")
+load("~/svm.RData")
+```
+
+
+```{r, message=FALSE}
+# generate test set from training set for model selection
+set.seed(124578)
+trainIdx <- createDataPartition(seq(nrow(trainingSub)), p=0.75, list=FALSE)
+training <- trainingSub[trainIdx, ]
+testing <- trainingSub[-trainIdx, ]
+
+# generate trainControl object
+trainCtrl <- trainControl(method="cv", number=5, allowParallel=FALSE)
+
+# random forest
+set.seed(875421)
+# rfModel <- train(classe ~ ., data=training, method="rf", preProcess=c("knnImpute", "BoxCox"), trControl=trainCtrl, tuneLength=5)
+rfPred <- predict(rfModel, newdata=testing)
+sum(rfPred==testing$classe) / length(rfPred)
+# boosted trees
+set.seed(875421)
+# gbmModel <- train(classe ~ ., data=training, method="gbm", preProcess=c("knnImpute", "BoxCox"), verbose=FALSE, trControl=trainCtrl, tuneLength=5)
+gbmPred <- predict(gbmModel, newdata=testing)
+sum(gbmPred==testing$classe) / length(gbmPred)
+# linear discriminant analysis
+set.seed(875421)
+# ldaModel <- train(classe ~ ., data=training, method="lda", preProcess=c("knnImpute", "BoxCox"), verbose=FALSE, trControl=trainCtrl, tuneLength=5)
+ldaPred <- predict(ldaModel, newdata=testing)
+sum(ldaPred==testing$classe) / length(ldaPred)
+# support vector machine
+set.seed(875421)
+# svmModel <- train(classe ~ ., data=training, method="svmRadial", preProcess=c("knnImpute", "BoxCox"), verbose=FALSE, trControl=trainCtrl, tuneLength=5)
+svmPred <- predict(svmModel, newdata=testing)
+sum(svmPred==testing$classe) / length(svmPred)
+```
+
+Confusion matrices of fitted models
+```{r}
+# boosted tree model
+gbmCM <- confusionMatrix(gbmPred, testing$classe)
+gbmCM$table
+# random forest model
+rfCM <- confusionMatrix(rfPred, testing$classe)
+rfCM$table
+# linear discriminant analysis model
+ldaCM <- confusionMatrix(ldaPred, testing$classe)
+ldaCM$table
+# support vector machine model
+svmCM <- confusionMatrix(svmPred, testing$classe)
+svmCM$table
+```
+
+Conclusions:
+
+The best out-of-sample prediction accuracy is obtained with a boosted tree model (99.9%), closely followed by a random forest model (99.7%). A support vector machine model also does quite well (~97%). Linear discriminant analysis performs poorly compared to the other algorithms (~75%). This indicates that the data may not be linearly separable. 
+The boosted tree model will be used for prediction on the unknown data. 
+
+### 4. Use boosted tree model to predict test set
+
+```{r, message=FALSE}
+# predict unclassified test set
+finalPred <- predict(gbmModel, unclassified)
+as.character(finalPred)
+```
+
+Conclusions:
+
+The boosted tree model performed well for the unclassified data set (20 out 20 predictions were correct). This indicates that the model described in this project will predict the quality of weight lifting excercises based on sensor measurements with very high accuracy. 
+
+#### Session information
+```{r}
+date()
+sessionInfo()
+```
